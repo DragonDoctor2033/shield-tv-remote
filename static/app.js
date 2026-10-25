@@ -64,6 +64,8 @@ window.addEventListener("pageshow", (e) => { if (e.persisted) connect(); });
 // ---------- feedback ----------
 
 // Safari has no vibration API; toggling an iOS 18 "switch" checkbox gives a system haptic tick.
+// iOS only plays it inside a user activation, and a touch activates on release (pointerup,
+// click), not on pointerdown or from a timer, so callers tick when the finger lifts.
 const haptic = (() => {
   if (navigator.vibrate) return () => navigator.vibrate(10);
   return () => {
@@ -181,9 +183,9 @@ for (const el of document.querySelectorAll("[data-key]")) {
   const k = el.dataset.key;
   if (el.hasAttribute("data-repeat")) {
     const rep = repeater(() => key(k));
-    pressable(el, () => { haptic(); rep.start(); }, () => rep.stop());
+    pressable(el, () => rep.start(), () => { rep.stop(); haptic(); });
   } else {
-    pressable(el, () => { haptic(); key(k); });
+    pressable(el, () => key(k), haptic);
   }
 }
 
@@ -214,14 +216,12 @@ ring.addEventListener("pointerdown", (e) => {
   e.preventDefault();
   capture(ring, e);
   const zone = ringZone(e);
-  haptic();
   if (zone === -1) {
     okEl.classList.add("on");
     ringPress = { ok: true, held: false };
     ringPress.timer = setTimeout(() => {
       ringPress.held = true;
       okEl.classList.add("long");
-      haptic();
       send({ t: "hold", k: "DPAD_CENTER", d: "start" });
     }, LONG_OK_MS);
   } else {
@@ -235,6 +235,7 @@ ring.addEventListener("pointerdown", (e) => {
 
 function ringEnd() {
   if (!ringPress) return;
+  haptic();
   if (ringPress.ok) {
     clearTimeout(ringPress.timer);
     if (ringPress.held) send({ t: "hold", k: "DPAD_CENTER", d: "end" });
@@ -276,7 +277,6 @@ pad.addEventListener("pointerdown", (e) => {
   swipe.timer = setTimeout(() => {
     if (swipe.moved) return;
     swipe.held = true;
-    haptic();
     send({ t: "hold", k: "DPAD_CENTER", d: "start" });
   }, LONG_OK_MS + 150);
 });
@@ -293,7 +293,6 @@ pad.addEventListener("pointermove", (e) => {
   if (Math.max(Math.abs(dx), Math.abs(dy)) < SWIPE_STEP_PX) return;
   if (Math.abs(dx) > Math.abs(dy)) key(dx > 0 ? "DPAD_RIGHT" : "DPAD_LEFT");
   else key(dy > 0 ? "DPAD_DOWN" : "DPAD_UP");
-  haptic();
   swipe.x = e.clientX;
   swipe.y = e.clientY;
 });
@@ -301,8 +300,9 @@ pad.addEventListener("pointermove", (e) => {
 function padEnd() {
   if (!swipe) return;
   clearTimeout(swipe.timer);
+  haptic();
   if (swipe.held) send({ t: "hold", k: "DPAD_CENTER", d: "end" });
-  else if (!swipe.moved) { haptic(); key("DPAD_CENTER"); }
+  else if (!swipe.moved) key("DPAD_CENTER");
   swipe = null;
   pad.classList.remove("on");
   padDot.hidden = true;
@@ -382,17 +382,17 @@ function closeKb() {
   $("kb-backdrop").hidden = true;
 }
 
+// The TV inserts what it gets at its cursor rather than replacing the field, so send only
+// the change: erase back to where the texts differ, then type the new rest.
 function flushText() {
   clearTimeout(kbTimer);
-  const v = kbInput.value;
-  if (v === kbSent) return;
-  if (v) {
-    send({ t: "text", v });
-  } else {
-    // The TV field mirrors ours; erase what we put there.
-    for (let i = 0; i < Math.min(kbSent.length, 80); i++) key("DEL");
-  }
-  kbSent = v;
+  const now = Array.from(kbInput.value);
+  const before = Array.from(kbSent);
+  let same = 0;
+  while (same < now.length && same < before.length && now[same] === before[same]) same++;
+  for (let i = same; i < before.length; i++) key("DEL");
+  if (now.length > same) send({ t: "text", v: now.slice(same).join("") });
+  kbSent = kbInput.value;
 }
 
 $("kb-open").addEventListener("click", () => { haptic(); openKb(); });

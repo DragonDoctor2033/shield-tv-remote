@@ -18,6 +18,7 @@ let apps = { launch: [], names: {} };
 
 function connect() {
   clearTimeout(wsTimer);
+  stopVoice(false);
   if (ws) {
     ws.onclose = null;
     try { ws.close(); } catch (_) { /* already gone */ }
@@ -29,10 +30,12 @@ function connect() {
     let m;
     try { m = JSON.parse(e.data); } catch (_) { return; }
     if (m.t === "state") { state = m; render(); }
-    else if (m.t === "error") toast(m.msg);
+    else if (m.t === "error") { toast(m.msg); if (voice && !voice.listening) stopVoice(); }
+    else if (m.t === "voice") voiceState(m.state);
     else if (m.t === "info") toast(m.msg, 8000);
   };
   ws.onclose = () => {
+    stopVoice(false);
     render();
     wsTimer = setTimeout(connect, backoff);
     backoff = Math.min(backoff * 2, 4000);
@@ -53,7 +56,7 @@ const key = (k) => send({ t: "key", k });
 
 // iOS kills sockets of backgrounded home-screen apps but may still report them open.
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (document.hidden) { hiddenAt = Date.now(); stopVoice(); return; }
   const wasAway = hiddenAt && Date.now() - hiddenAt > 3000;
   hiddenAt = 0;
   if (ws && ws.readyState === WebSocket.CONNECTING) return;
@@ -63,24 +66,29 @@ window.addEventListener("pageshow", (e) => { if (e.persisted) connect(); });
 
 // ---------- feedback ----------
 
-// Safari has no vibration API; toggling an iOS 18 "switch" checkbox gives a system haptic tick.
-// iOS only plays it inside a user activation, and a touch activates on release (pointerup,
-// click), not on pointerdown or from a timer, so callers tick when the finger lifts.
-const haptic = (() => {
-  if (navigator.vibrate) return () => navigator.vibrate(10);
-  return () => {
-    const label = document.createElement("label");
-    label.ariaHidden = "true";
-    label.style.display = "none";
-    const input = document.createElement("input");
-    input.type = "checkbox";
-    input.setAttribute("switch", "");
-    label.appendChild(input);
-    document.head.appendChild(label);
-    label.click();
-    label.remove();
-  };
-})();
+// Android vibrates on request; callers tick when the finger lifts.
+const haptic = navigator.vibrate ? () => navigator.vibrate(10) : () => {};
+
+// Safari has no vibration API, but iOS ticks when a real tap toggles a "switch" checkbox,
+// also through its <label>. A script calling .click() no longer counts (iOS 26), so each
+// control carries an invisible label for one hidden switch and the finger toggles it itself.
+// The switch sits outside the controls, so its own click doesn't bubble into their handlers.
+const tickSwitch = document.createElement("input");
+tickSwitch.type = "checkbox";
+tickSwitch.setAttribute("switch", "");
+tickSwitch.id = "tick";
+tickSwitch.hidden = true;
+tickSwitch.tabIndex = -1;
+document.body.appendChild(tickSwitch);
+
+function tickable(el) {
+  if (navigator.vibrate) return;
+  const label = document.createElement("label");
+  label.className = "tick";
+  label.htmlFor = tickSwitch.id;
+  label.ariaHidden = "true";
+  el.appendChild(label);
+}
 
 let toastTimer = 0;
 function toast(text, ms = 2200) {
@@ -119,6 +127,8 @@ function render() {
     dot.classList.add("is-ok");
     sub.textContent = appName(state.app) || "Включён";
   }
+  if (online && voice) sub.textContent = "Слушаю…";
+  $("voice").classList.toggle("listening", !!voice);
 
   $("power").classList.toggle("is-off", online && state.connected && state.on === false);
 
@@ -143,7 +153,10 @@ function render() {
 
 // ---------- press helpers ----------
 
+// Touch already sticks to the element it started on. Capturing it on the control would
+// retarget the release, and then the tap never reaches the tick label inside.
 function capture(el, e) {
+  if (e.pointerType !== "mouse") return;
   try { el.setPointerCapture(e.pointerId); } catch (_) { /* pointer already gone */ }
 }
 
@@ -336,6 +349,23 @@ setMode(savedMode);
 
 // ---------- apps ----------
 
+// Phones that saved the old http:// address move to the https one (the microphone needs it),
+// but only if they can reach it: a phone whose DNS skips the home resolver stays on http
+// and keeps a working remote, just without voice.
+async function moveToHttps(url) {
+  if (location.protocol !== "http:" || !url) return;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 2500);
+  try {
+    await fetch(new URL("api/apps", url), { mode: "no-cors", cache: "no-store", signal: ctrl.signal });
+  } catch (_) {
+    return;
+  } finally {
+    clearTimeout(timer);
+  }
+  location.replace(new URL(location.pathname + location.search, url));
+}
+
 async function loadApps() {
   try {
     const r = await fetch("api/apps");
@@ -343,6 +373,7 @@ async function loadApps() {
   } catch (_) {
     return;
   }
+  moveToHttps(apps.https_url);
   const box = $("apps");
   box.textContent = "";
   for (const a of apps.launch) {
@@ -356,6 +387,7 @@ async function loadApps() {
       haptic();
       if (send({ t: "app", id: a.id })) toast(`Открываю ${a.name}`);
     });
+    tickable(b);
     box.appendChild(b);
   }
   render();
@@ -416,6 +448,193 @@ kb.addEventListener("submit", (e) => {
   closeKb();
 });
 
+// ---------- voice ----------
+
+// The Shield takes 16-bit mono PCM at 8 kHz. The phone's audio context runs at its own rate
+// (48 kHz on an iPhone, but never assumed), so the page filters and decimates it itself.
+const VOICE_RATE = 8000;
+const VOICE_FRAME = 800; // samples per message: 100 ms
+const VOICE_MAX_MS = 12000;
+let voice = null;
+
+// Streaming windowed-sinc resampler to VOICE_RATE: push(Float32Array) returns the new samples
+// as Int16Array. Its low-pass edge is 0.46 of the output rate, so tones above ~3.7 kHz are
+// cut instead of folding back into the voice band as aliasing.
+function makeResampler(inRate) {
+  const ratio = inRate / VOICE_RATE;
+  const wide = Math.max(ratio, 1);
+  const cut = 0.46 / wide; // low-pass edge, cycles per input sample
+  const half = Math.ceil(12 * wide); // kernel half-width, input samples
+  const STEPS = 64; // kernel table entries per input sample
+  const table = new Float32Array(half * STEPS + 2);
+  for (let i = 0; i < table.length; i++) {
+    const x = i / STEPS;
+    const a = 2 * Math.PI * cut * x;
+    const t = Math.min(x / half, 1);
+    const win = 0.42 + 0.5 * Math.cos(Math.PI * t) + 0.08 * Math.cos(2 * Math.PI * t); // Blackman
+    table[i] = 2 * cut * (x ? Math.sin(a) / a : 1) * win;
+  }
+  let buf = new Float32Array(0);
+  let pos = 0; // where the next output sample sits in buf, in input samples
+  return (input) => {
+    const all = new Float32Array(buf.length + input.length);
+    all.set(buf);
+    all.set(input, buf.length);
+    buf = all;
+    const out = new Int16Array(Math.ceil((buf.length - pos) / ratio) + 1);
+    let n = 0;
+    while (pos + half < buf.length) {
+      let sum = 0;
+      for (let i = Math.max(0, Math.ceil(pos - half)); i <= pos + half; i++) {
+        const d = Math.abs(i - pos) * STEPS;
+        const k = Math.floor(d);
+        sum += buf[i] * (table[k] + (table[k + 1] - table[k]) * (d - k));
+      }
+      out[n++] = Math.max(-32768, Math.min(32767, Math.round(sum * 32767)));
+      pos += ratio;
+    }
+    const drop = Math.max(0, Math.ceil(pos - half));
+    buf = buf.slice(drop);
+    pos -= drop;
+    return out.subarray(0, n);
+  };
+}
+
+// Runs on the audio thread: hands the mic over in 50 ms pieces.
+const VOICE_TAP = `
+class VoiceTap extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buf = new Float32Array(Math.round(sampleRate / 20));
+    this.n = 0;
+  }
+  process(inputs) {
+    const ch = inputs[0][0];
+    for (let i = 0; ch && i < ch.length; i++) {
+      this.buf[this.n++] = ch[i];
+      if (this.n === this.buf.length) { this.port.postMessage(this.buf.slice()); this.n = 0; }
+    }
+    return true;
+  }
+}
+registerProcessor("voice-tap", VoiceTap);
+`;
+
+async function openTap(v) {
+  if (v.ctx.audioWorklet) {
+    try {
+      const url = URL.createObjectURL(new Blob([VOICE_TAP], { type: "text/javascript" }));
+      try { await v.ctx.audioWorklet.addModule(url); } finally { URL.revokeObjectURL(url); }
+      const node = new AudioWorkletNode(v.ctx, "voice-tap", { channelCount: 1, channelCountMode: "explicit" });
+      node.port.onmessage = (e) => voiceFeed(v, e.data);
+      return node;
+    } catch (_) { /* worklet refused: use the old node below */ }
+  }
+  const node = v.ctx.createScriptProcessor(2048, 1, 1);
+  node.onaudioprocess = (e) => voiceFeed(v, e.inputBuffer.getChannelData(0));
+  return node;
+}
+
+function voiceFeed(v, floats) {
+  if (voice !== v) return;
+  v.got = true;
+  const pcm = v.resample(floats);
+  v.queue.push(pcm);
+  v.queued += pcm.length;
+  if (v.queued >= VOICE_FRAME) voiceFlush(v);
+}
+
+function voiceFlush(v) {
+  if (!v.queued) return;
+  const frame = new Int16Array(v.queued);
+  let at = 0;
+  for (const part of v.queue) { frame.set(part, at); at += part.length; }
+  v.queue = [];
+  v.queued = 0;
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(frame.buffer);
+}
+
+// Let go of the mic and the audio context; stopping every track clears iOS's orange dot.
+function release(v) {
+  for (const node of [v.source, v.tap]) {
+    try { node.disconnect(); } catch (_) { /* never connected */ }
+  }
+  if (v.tap && v.tap.port) v.tap.port.onmessage = null;
+  if (v.stream) for (const track of v.stream.getTracks()) track.stop();
+  try { Promise.resolve(v.ctx.close()).catch(() => {}); } catch (_) { /* already closed */ }
+}
+
+async function startVoice() {
+  if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    toast("Голосовой ввод работает только по https-адресу пульта");
+    return;
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    toast("Нет связи с пультом на Pi");
+    return;
+  }
+  const v = { queue: [], queued: 0, started: false, listening: false, got: false };
+  voice = v;
+  render();
+  try {
+    // This much runs inside the tap: iOS starts audio and the mic only from a user activation.
+    v.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const resumed = v.ctx.resume().catch(() => {});
+    const media = navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    v.stream = await media;
+    await resumed;
+    if (voice !== v) { release(v); return; } // tapped again while the permission prompt was up
+    v.resample = makeResampler(v.ctx.sampleRate);
+    v.source = v.ctx.createMediaStreamSource(v.stream);
+    v.tap = await openTap(v);
+    if (voice !== v) { release(v); return; }
+    if (!send({ t: "voice", d: "start" })) { stopVoice(); return; }
+    v.started = true;
+    v.source.connect(v.tap);
+    v.tap.connect(v.ctx.destination); // it outputs silence; some browsers only run connected nodes
+    v.timer = setTimeout(() => stopVoice(), VOICE_MAX_MS);
+    v.watch = setTimeout(() => {
+      if (v.got) return;
+      toast("Микрофон не отвечает");
+      stopVoice();
+    }, 2500);
+  } catch (err) {
+    if (voice !== v) { release(v); return; }
+    toast(err && err.name === "NotAllowedError" ? "Нет доступа к микрофону. Разреши его в настройках браузера" : "Не удалось включить микрофон", 4000);
+    stopVoice();
+  }
+}
+
+// notify=false when the server already ended the session (or the socket is gone).
+function stopVoice(notify = true) {
+  const v = voice;
+  if (!v) return;
+  voice = null;
+  clearTimeout(v.timer);
+  clearTimeout(v.watch);
+  if (v.started && notify) {
+    voiceFlush(v);
+    send({ t: "voice", d: "end" });
+  }
+  release(v);
+  render();
+}
+
+function voiceState(s) {
+  if (!voice) return;
+  if (s === "listening") voice.listening = true;
+  else if (s === "done" && voice.listening) stopVoice(false); // the server's time limit or a lost TV
+}
+
+// Start before the haptic: the mic and the audio context are requested inside this tap.
+$("voice").addEventListener("click", () => {
+  if (voice) stopVoice();
+  else startVoice();
+  haptic();
+});
+
 // ---------- pairing ----------
 
 $("pair-start").addEventListener("click", () => {
@@ -432,6 +651,12 @@ $("pair-step2").addEventListener("submit", (e) => {
 $("pair-cancel").addEventListener("click", () => send({ t: "pair_cancel" }));
 
 // ---------- start ----------
+
+// Not the keyboard's submit button: a label inside it would take the tap instead of the form.
+for (const el of document.querySelectorAll(
+  "[data-key], #power, #mode, #kb-open, #voice, #ring, #touchpad, #pair-start, #kb-clear")) {
+  tickable(el);
+}
 
 connect();
 loadApps();

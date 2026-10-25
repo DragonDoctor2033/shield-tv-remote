@@ -80,7 +80,13 @@ svg .fill { fill: currentColor; stroke: none; }
 .dot.is-warn { background: var(--warn); }
 .dot.is-bad { background: var(--bad); }
 
+/* Invisible tap target that toggles the hidden haptic switch (tickable in app.js). Its host
+   isolates it, so the label never sits above a neighbour such as the mode toggle. */
+.tick { position: absolute; inset: 0; z-index: 2; border-radius: inherit; }
+.ring, .touchpad, .btn, .icon-btn, .corner, .mode, .app-tile { isolation: isolate; }
+
 .icon-btn {
+  position: relative;
   width: 48px; height: 48px; flex: none;
   display: grid; place-items: center;
   border-radius: 50%;
@@ -89,6 +95,14 @@ svg .fill { fill: currentColor; stroke: none; }
 }
 .icon-btn.power { color: var(--bad); }
 .icon-btn.power.is-off { color: var(--accent); }
+.icon-btn.listening { background: var(--accent); color: var(--accent-ink); animation: listen 1.6s ease-in-out infinite; }
+@keyframes listen {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(118, 185, 0, .5); }
+  50% { box-shadow: 0 0 0 9px rgba(118, 185, 0, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn.listening { animation: none; }
+}
 
 /* D-pad area */
 .pad-area {
@@ -181,6 +195,7 @@ svg .fill { fill: currentColor; stroke: none; }
 /* Button rows */
 .row { display: grid; grid-template-columns: 1fr 1.35fr 1fr; gap: 10px; }
 .btn {
+  position: relative;
   height: clamp(50px, 7.2vh, 60px);
   border-radius: 18px;
   background: var(--surface);

@@ -3,6 +3,7 @@
   "samsung": null,
   "port": 80,
   "mdns_name": "tv.local",
+  "https_url": null,
   "apps": [
     {"id": "com.google.android.youtube.tv", "name": "YouTube", "color": "#e62117"},
     {"id": "com.netflix.ninja", "name": "Netflix", "color": "#b20710"},

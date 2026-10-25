@@ -28,6 +28,12 @@ log = logging.getLogger("tv-remote")
 # phone can drop off Wi-Fi mid-press, so the server lets go on its own too.
 LONG_PRESS_MAX_S = 5.0
 
+# Voice search streams PCM (16-bit LE, mono, 8 kHz). The Shield wants messages of at least 8 KB
+# and the library pads shorter ones with silence, so audio goes out in exact 0.5 s chunks. The
+# page stops after 12 s; the server stops a forgotten session on its own a little later.
+VOICE_CHUNK = 8192
+VOICE_MAX_S = 15.0
+
 KEYS = {
     "DPAD_UP", "DPAD_DOWN", "DPAD_LEFT", "DPAD_RIGHT", "DPAD_CENTER",
     "BACK", "HOME", "MENU", "SETTINGS", "SEARCH", "ENTER", "DEL",
@@ -129,6 +135,7 @@ class Shield:
             certfile=str(data_dir / "cert.pem"),
             keyfile=str(data_dir / "key.pem"),
             host=host,
+            enable_voice=True,
         )
         self._remote.add_is_on_updated_callback(lambda v: self._set(on=v))
         self._remote.add_current_app_updated_callback(lambda v: self._set(app=v))
@@ -140,6 +147,8 @@ class Shield:
         self._wake = asyncio.Event()
         self._connected_evt = asyncio.Event()
         self._waiting = False
+        self._voice = None  # the open VoiceStream, if any
+        self._voice_buf = bytearray()
         # Optimistic: the first connect attempt tells us whether the certificate is paired.
         self.state = {
             "connected": False,
@@ -263,6 +272,56 @@ class Shield:
             await self._adb.keyevent("KEYCODE_WAKEUP")
         return await self._adb.launch(package)
 
+    async def voice_start(self) -> str | None:
+        """Open a voice session; None once the TV listens, else what to tell the user."""
+        from androidtvremote2 import ConnectionClosed, VoiceSessionInProgress
+
+        if not await self._ready():
+            return "Нет связи с телевизором"
+        if not self._remote.is_voice_enabled:
+            return "Телевизор не поддерживает голосовой ввод"
+        self._voice_buf.clear()
+        try:
+            self._voice = await self._remote.start_voice()
+        except VoiceSessionInProgress:
+            return "Голосовой ввод уже занят"
+        except asyncio.TimeoutError:
+            return "Телевизор не ответил на голосовой запрос"
+        except ConnectionClosed:
+            return "Нет связи с телевизором"
+        return None
+
+    async def voice_audio(self, data: bytes) -> bool:
+        """Buffer audio and send it in whole chunks; False if the TV connection is gone."""
+        from androidtvremote2 import ConnectionClosed
+
+        if self._voice is None:
+            return False
+        self._voice_buf += data
+        try:
+            while len(self._voice_buf) >= VOICE_CHUNK:
+                self._voice.send_chunk(bytes(self._voice_buf[:VOICE_CHUNK]))
+                del self._voice_buf[:VOICE_CHUNK]
+        except ConnectionClosed:
+            return False
+        return True
+
+    async def voice_end(self) -> None:
+        """Send what is left (the library pads it to a full chunk) and close the session."""
+        from androidtvremote2 import ConnectionClosed
+
+        voice, self._voice = self._voice, None
+        rest = bytes(self._voice_buf[:len(self._voice_buf) & ~1])  # whole samples only
+        self._voice_buf.clear()
+        if voice is None:
+            return
+        try:
+            if rest:
+                voice.send_chunk(rest)
+        except ConnectionClosed:
+            pass
+        voice.end()
+
     async def pair_start(self) -> None:
         self._set(pairing=True, connected=False)
         try:
@@ -297,6 +356,7 @@ class FakeShield:
             "app": "com.google.android.tvlauncher",
             "volume": {"level": 12, "max": 100, "muted": False},
         }
+        self._voice_bytes = 0
 
     def _changed(self) -> None:
         self._on_change()
@@ -338,6 +398,18 @@ class FakeShield:
         self._changed()
         return True
 
+    async def voice_start(self) -> str | None:
+        log.info("fake voice start")
+        self._voice_bytes = 0
+        return None
+
+    async def voice_audio(self, data: bytes) -> bool:
+        self._voice_bytes += len(data)
+        return True
+
+    async def voice_end(self) -> None:
+        log.info("fake voice end, %d bytes (%.2f s)", self._voice_bytes, self._voice_bytes / 16000)
+
     async def pair_start(self) -> None:
         self.state["pairing"] = True
         self._changed()
@@ -354,10 +426,14 @@ class FakeShield:
 
 class Server:
     def __init__(self, args, config: dict):
-        # The page reads this shape from /api/apps: tiles to launch, plus friendly package names.
-        self.apps = {"launch": config.get("apps", []), "names": config.get("names", {})}
+        # The page reads this shape from /api/apps: tiles to launch, friendly package names, and
+        # the https address to move to (the microphone needs a secure page).
+        self.apps = {"launch": config.get("apps", []), "names": config.get("names", {}),
+                     "https_url": config.get("https_url")}
         self.clients: set[web.WebSocketResponse] = set()
         self._held: dict[str, asyncio.TimerHandle] = {}
+        self._voice_ws: web.WebSocketResponse | None = None  # the phone that owns the voice session
+        self._voice_timer: asyncio.TimerHandle | None = None
         if args.fake:
             self.tv = FakeShield(self.broadcast_state)
         else:
@@ -394,6 +470,36 @@ class Server:
         except (ConnectionError, RuntimeError):
             pass
 
+    async def _tell(self, ws: web.WebSocketResponse, **msg) -> None:
+        await self._send(ws, json.dumps(msg, ensure_ascii=False))
+
+    async def _voice_start(self, ws: web.WebSocketResponse) -> None:
+        await self._voice_stop(ws)  # a second start from the same phone replaces its old session
+        if self._voice_ws is not None:
+            await self._tell(ws, t="error", msg="Голосовой ввод уже занят")
+            return
+        self._voice_ws = ws  # reserved while the TV answers (up to ~2 s)
+        err = await self.tv.voice_start()
+        if err:
+            self._voice_ws = None
+            await self._tell(ws, t="error", msg=err)
+            return
+        loop = asyncio.get_running_loop()
+        self._voice_timer = loop.call_later(
+            VOICE_MAX_S, lambda: asyncio.ensure_future(self._voice_stop(ws)))
+        await self._tell(ws, t="voice", state="listening")
+
+    async def _voice_stop(self, ws: web.WebSocketResponse) -> None:
+        """End the voice session if this phone owns it."""
+        if self._voice_ws is not ws:
+            return
+        self._voice_ws = None
+        if self._voice_timer is not None:
+            self._voice_timer.cancel()
+            self._voice_timer = None
+        await self.tv.voice_end()
+        await self._tell(ws, t="voice", state="done")
+
     async def _release(self, code: str) -> None:
         handle = self._held.pop(code, None)
         if handle is not None:
@@ -428,6 +534,11 @@ class Server:
         elif kind == "app" and msg.get("id") in {a["id"] for a in self.apps["launch"]}:
             if not await self.tv.launch(msg["id"]):
                 await ws.send_json({"t": "error", "msg": "Не получилось открыть приложение"})
+        elif kind == "voice" and msg.get("d") in ("start", "end"):
+            if msg["d"] == "start":
+                await self._voice_start(ws)
+            else:
+                await self._voice_stop(ws)
         elif kind == "pair_start":
             try:
                 await self.tv.pair_start()
@@ -458,6 +569,11 @@ class Server:
         await ws.send_str(self.state_msg())
         try:
             async for raw in ws:
+                if raw.type == WSMsgType.BINARY:  # voice audio; only the session's owner counts
+                    if ws is self._voice_ws and not await self.tv.voice_audio(raw.data):
+                        await self._tell(ws, t="error", msg="Нет связи с телевизором")
+                        await self._voice_stop(ws)
+                    continue
                 if raw.type != WSMsgType.TEXT:
                     continue
                 try:
@@ -468,6 +584,7 @@ class Server:
                     await self.handle(ws, msg)
         finally:
             self.clients.discard(ws)
+            await self._voice_stop(ws)
             for code in list(self._held):
                 await self._release(code)
         return ws

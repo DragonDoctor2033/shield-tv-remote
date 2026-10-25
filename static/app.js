@@ -350,14 +350,15 @@ setMode(savedMode);
 // ---------- apps ----------
 
 // Phones that saved the old http:// address move to the https one (the microphone needs it),
-// but only if they can reach it: a phone whose DNS skips the home resolver stays on http
-// and keeps a working remote, just without voice.
+// but only if this server answers there: a phone whose DNS skips the home resolver, or that
+// the proxy refuses, stays on http and keeps a working remote, just without voice.
 async function moveToHttps(url) {
   if (location.protocol !== "http:" || !url) return;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 2500);
   try {
-    await fetch(new URL("api/apps", url), { mode: "no-cors", cache: "no-store", signal: ctrl.signal });
+    const r = await fetch(new URL("api/ping", url), { cache: "no-store", signal: ctrl.signal });
+    if (!r.ok || !(await r.json()).ok) return;
   } catch (_) {
     return;
   } finally {

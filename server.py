@@ -592,6 +592,11 @@ class Server:
     async def apps_handler(self, request: web.Request) -> web.Response:
         return web.json_response(self.apps)
 
+    async def ping_handler(self, request: web.Request) -> web.Response:
+        # Readable cross-origin on purpose: the http page asks the https address before moving
+        # there, and a proxy's own refusal (403 without this header) must not count as an answer.
+        return web.json_response({"ok": True}, headers={"Access-Control-Allow-Origin": "*"})
+
     async def index(self, request: web.Request) -> web.FileResponse:
         return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
@@ -600,6 +605,7 @@ class Server:
         app.router.add_get("/", self.index)
         app.router.add_get("/ws", self.ws_handler)
         app.router.add_get("/api/apps", self.apps_handler)
+        app.router.add_get("/api/ping", self.ping_handler)
         app.router.add_static("/", STATIC)
 
         def tv_done(task: asyncio.Task) -> None:

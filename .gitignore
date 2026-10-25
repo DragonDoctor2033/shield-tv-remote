@@ -1,0 +1,7 @@
+# Personal settings: addresses and your own app list. Start from config.example.json.
+config.json
+# Pairing with the Shield (cert/key) and the Samsung token.
+data/
+.venv/
+__pycache__/
+*.pyc

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Пульт">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b0c0f">
+<meta name="format-detection" content="telephone=no">
+<title>Пульт</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-512.png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.3 6.6a8 8 0 1 0 11.4 0"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+    <symbol id="i-home" viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9v11h13V9"/></symbol>
+    <symbol id="i-playpause" viewBox="0 0 24 24"><path class="fill" d="M3.5 5.5v13l9-6.5z"/><path d="M16 6v12M20.5 6v12"/></symbol>
+    <symbol id="i-rew" viewBox="0 0 24 24"><path class="fill" d="M11 6.5 3.5 12l7.5 5.5zM20.5 6.5 13 12l7.5 5.5z"/></symbol>
+    <symbol id="i-ff" viewBox="0 0 24 24"><path class="fill" d="M13 6.5 20.5 12 13 17.5zM3.5 6.5 11 12l-7.5 5.5z"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14M12 5v14"/></symbol>
+    <symbol id="i-vol" viewBox="0 0 24 24"><path class="fill" d="M10.5 5 6 9H3v6h3l4.5 4z"/><path d="M15 9a4 4 0 0 1 0 6M17.8 6.2a8 8 0 0 1 0 11.6"/></symbol>
+    <symbol id="i-mute" viewBox="0 0 24 24"><path class="fill" d="M10.5 5 6 9H3v6h3l4.5 4z"/><path d="m15.5 9.5 5 5M20.5 9.5l-5 5"/></symbol>
+    <symbol id="i-kb" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2.5"/><path d="M6 10h.01M9.3 10h.01M12.6 10h.01M15.9 10h.01M18 10h.01M8 14h8"/></symbol>
+    <symbol id="i-swipe" viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="4"/><circle cx="12" cy="15" r="1.8"/><path d="M12 11V6.5M9.8 8.7 12 6.5l2.2 2.2"/></symbol>
+    <symbol id="i-dpad" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.2"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="m7 14.5 5-5 5 5"/></symbol>
+  </defs>
+</svg>
+
+<div class="app">
+  <header class="top">
+    <button class="icon-btn power" id="power" aria-label="Питание"><svg><use href="#i-power"/></svg></button>
+    <div class="status" id="status">
+      <span class="dot" id="dot"></span>
+      <div class="status-text">
+        <div class="title">Shield</div>
+        <div class="sub" id="sub">Подключаюсь…</div>
+      </div>
+    </div>
+    <button class="icon-btn" id="kb-open" aria-label="Клавиатура"><svg><use href="#i-kb"/></svg></button>
+  </header>
+
+  <section class="pad-area">
+    <div class="ring" id="ring" aria-label="Крестовина">
+      <div class="wedge" id="wedge"></div>
+      <svg class="chev up"><use href="#i-chev"/></svg>
+      <svg class="chev right"><use href="#i-chev"/></svg>
+      <svg class="chev down"><use href="#i-chev"/></svg>
+      <svg class="chev left"><use href="#i-chev"/></svg>
+      <div class="ok" id="ok">OK</div>
+    </div>
+    <div class="touchpad" id="touchpad" hidden>
+      <div class="tp-hint">Свайп — стрелки<br>Тап — OK, удержание — долгий OK</div>
+    </div>
+    <button class="corner left" data-key="BACK" aria-label="Назад"><svg><use href="#i-back"/></svg></button>
+    <button class="corner right" data-key="HOME" aria-label="Домой"><svg><use href="#i-home"/></svg></button>
+    <button class="mode" id="mode"><svg><use href="#i-swipe"/></svg><span>Свайпы</span></button>
+  </section>
+
+  <section class="row">
+    <button class="btn" data-key="MEDIA_REWIND" data-repeat aria-label="Назад по видео"><svg><use href="#i-rew"/></svg></button>
+    <button class="btn wide" data-key="MEDIA_PLAY_PAUSE" aria-label="Пауза"><svg><use href="#i-playpause"/></svg></button>
+    <button class="btn" data-key="MEDIA_FAST_FORWARD" data-repeat aria-label="Вперёд по видео"><svg><use href="#i-ff"/></svg></button>
+  </section>
+
+  <section class="row vol">
+    <button class="btn" data-key="VOLUME_DOWN" data-repeat aria-label="Тише"><svg><use href="#i-minus"/></svg></button>
+    <button class="btn wide" data-key="VOLUME_MUTE" id="mute" aria-label="Без звука">
+      <svg id="mute-icon"><use href="#i-vol"/></svg><span id="vol-level"></span>
+    </button>
+    <button class="btn" data-key="VOLUME_UP" data-repeat aria-label="Громче"><svg><use href="#i-plus"/></svg></button>
+  </section>
+
+  <section class="apps" id="apps"></section>
+</div>
+
+<div class="sheet-backdrop" id="kb-backdrop" hidden></div>
+<form class="sheet" id="kb" hidden autocomplete="off">
+  <div class="sheet-head">
+    <span>Текст на телевизор</span>
+    <button type="button" class="link" id="kb-close">Готово</button>
+  </div>
+  <input id="kb-input" type="text" enterkeyhint="search" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Начни печатать — текст появится на экране">
+  <div class="sheet-actions">
+    <button type="button" class="btn" id="kb-clear">Стереть</button>
+    <button type="submit" class="btn accent">Ввод</button>
+  </div>
+  <p class="hint">Сначала выбери на телевизоре поле поиска.</p>
+</form>
+
+<div class="overlay" id="pair" hidden>
+  <div class="card">
+    <div class="card-icon"><svg><use href="#i-dpad"/></svg></div>
+    <h1>Подключим пульт</h1>
+    <div id="pair-step1">
+      <p>Пульт ещё не знаком с телевизором. Нажми кнопку — на экране телевизора появится код из 6 символов.</p>
+      <button class="btn accent big" id="pair-start">Показать код на телевизоре</button>
+    </div>
+    <form id="pair-step2" hidden autocomplete="off">
+      <p>Введи код с экрана телевизора:</p>
+      <input id="pair-code" class="code" maxlength="6" autocapitalize="characters" autocorrect="off" spellcheck="false" inputmode="text" placeholder="······">
+      <button type="submit" class="btn accent big" id="pair-finish">Подключить</button>
+      <button type="button" class="link" id="pair-cancel">Отмена</button>
+    </form>
+  </div>
+</div>
+
+<div class="toast" id="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

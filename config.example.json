@@ -1,0 +1,23 @@
+{
+  "shield": "192.168.1.50",
+  "samsung": null,
+  "port": 80,
+  "mdns_name": "tv.local",
+  "apps": [
+    {"id": "com.google.android.youtube.tv", "name": "YouTube", "color": "#e62117"},
+    {"id": "com.netflix.ninja", "name": "Netflix", "color": "#b20710"},
+    {"id": "com.spotify.tv.android", "name": "Spotify", "color": "#1db954"},
+    {"id": "org.jellyfin.androidtv", "name": "Jellyfin", "color": "#00a4dc"},
+    {"id": "com.plexapp.android", "name": "Plex", "color": "#cc7b19"},
+    {"id": "org.xbmc.kodi", "name": "Kodi", "color": "#17b2e7"},
+    {"id": "org.videolan.vlc", "name": "VLC", "color": "#f28c00"},
+    {"id": "com.google.android.youtube.tvmusic", "name": "YT Music", "color": "#c4302b"}
+  ],
+  "names": {
+    "com.google.android.tvlauncher": "Главный экран",
+    "com.google.android.leanbacklauncher": "Главный экран",
+    "com.android.tv.settings": "Настройки",
+    "com.android.vending": "Play Маркет",
+    "com.nvidia.tegrazone3": "NVIDIA Games"
+  }
+}

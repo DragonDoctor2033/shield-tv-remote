@@ -1,0 +1,15 @@
+[Unit]
+Description=Publish the mDNS name for the Shield TV remote
+After=avahi-daemon.service network-online.target
+Requires=avahi-daemon.service
+
+[Service]
+User=@USER@
+# Publish the address the default route leaves from, not the first one `hostname -I` prints:
+# Docker/Podman bridges, a VPN or a second network card can come first.
+ExecStart=/bin/sh -c 'exec /usr/bin/avahi-publish -a -R @NAME@ "$(ip -4 route get 1.1.1.1 | sed -n "s/.* src \([0-9.]*\).*/\1/p")"'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
